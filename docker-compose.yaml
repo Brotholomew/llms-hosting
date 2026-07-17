@@ -1,0 +1,90 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    entrypoint: ["vllm", "serve"]
+    command: [
+      "${MODEL:-deepreinforce-ai/Ornith-1.0-35B-FP8}",
+      "--served-model-name", "ornith-1.0",
+      "--host", "0.0.0.0",
+      "--port", "8000",
+      "--max-model-len", "262144",
+      "--kv-cache-dtype", "fp8",
+      "--gpu-memory-utilization", "0.85",
+      "--max-num-batched-tokens", "4096",
+      "--enable-prefix-caching",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser", "qwen3_xml",
+      "--reasoning-parser", "qwen3",
+      "--trust-remote-code"
+    ]
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - llm-net
+    restart: unless-stopped
+    stop_grace_period: 120s
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD:-changeme}@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-1234}
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_DB: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - llm-net
+    restart: unless-stopped
+
+  # redis:
+  #   image: redis:7-alpine
+  #   volumes:
+  #     - redis-data:/data
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - llm-net
+  #   restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+  postgres-data:
+  # redis-data:
+
+networks:
+  llm-net:
+    driver: bridge

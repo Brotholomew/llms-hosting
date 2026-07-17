@@ -3,7 +3,7 @@
 vLLM (model serving) + LiteLLM (API proxy with key management) on a single-GPU server.
 
 Stack:
-- **vLLM** — high-throughput inference engine serving Ornith-1.0-35B (or any OpenAI-compatible model)
+- **vLLM** — high-throughput inference engine serving Gemma 4 31B (or any OpenAI-compatible model)
 - **LiteLLM** — API gateway with virtual keys, per-user budgets, rate limits, and spend tracking
 - **PostgreSQL** — persists keys, users, teams, and usage data
 
@@ -156,9 +156,9 @@ nano .env
 ```
 
 Set at minimum:
+- `HUGGING_FACE_HUB_TOKEN` — **required** for Gemma 4 (gated model). Accept the license at https://huggingface.co/google/gemma-4-31B-it and generate a token at https://huggingface.co/settings/tokens
 - `LITELLM_MASTER_KEY` — generate with `openssl rand -hex 16` and prefix with `sk-`
 - `POSTGRES_PASSWORD` — generate with `openssl rand -hex 16`
-- `HUGGING_FACE_HUB_TOKEN` — optional for Ornith (public model), set if you hit rate limits
 
 ### 2. Start the stack
 
@@ -166,7 +166,7 @@ Set at minimum:
 docker compose up -d
 ```
 
-This starts PostgreSQL, then LiteLLM, then vLLM. The first start downloads the model from Hugging Face (~70GB for Ornith-1.0-35B-FP8) which can take 10-30 minutes depending on your connection.
+This starts PostgreSQL, then LiteLLM, then vLLM. The first start downloads the model from Hugging Face (~35GB for the FP8-block) which can take 5-15 minutes depending on your connection.
 
 ### 3. Watch the logs
 
@@ -206,7 +206,7 @@ INFO:     Uvicorn running on http://0.0.0.0:4000
 docker compose exec vllm curl -s http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "ornith-1.0",
+    "model": "gemma-4-31b",
     "messages": [{"role": "user", "content": "Say hello in one word."}],
     "max_tokens": 20,
     "temperature": 0.6
@@ -222,7 +222,7 @@ curl -s http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "ornith-1.0",
+    "model": "gemma-4-31b",
     "messages": [{"role": "user", "content": "Say hello in one word."}],
     "max_tokens": 20,
     "temperature": 0.6
@@ -236,7 +236,7 @@ curl -s http://localhost:4000/key/generate \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "models": ["ornith-1.0"],
+    "models": ["gemma-4-31b"],
     "metadata": {"user": "alice@example.com"},
     "max_budget": 50.0,
     "budget_duration": "30d"
@@ -252,7 +252,7 @@ curl -s http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer <alices-virtual-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "ornith-1.0",
+    "model": "gemma-4-31b",
     "messages": [{"role": "user", "content": "Write a Python function to check if a number is prime."}],
     "max_tokens": 512,
     "temperature": 0.6
@@ -280,7 +280,7 @@ curl -s "http://localhost:4000/user/info?user_id=<user-id>" \
 Edit `.env` and change the `MODEL` variable:
 
 ```env
-MODEL=deepreinforce-ai/Ornith-1.0-9B
+MODEL=RedHatAI/gemma-4-31B-it-FP8-block
 ```
 
 Then recreate the vLLM container:
@@ -291,15 +291,26 @@ docker compose up -d vllm
 
 vLLM will download the new model on next start.
 
+### Running Ornith instead
+
+The original Ornith-1.0-35B config is preserved in `docker-compose.ornith.yaml`:
+
+```bash
+docker compose -f docker-compose.ornith.yaml up -d
+```
+
 ### Common models and their flags
 
-| Model | VRAM | Flags to add/change |
+| Model | VRAM | Notes |
 |---|---|---|
-| Ornith-1.0-9B | ~19GB | Drop `--kv-cache-dtype fp8`, use `--max-model-len 32768` |
-| Ornith-1.0-35B-FP8 | ~55GB | Current default |
-| Ornith-1.0-397B-FP8 | ~200GB | Add `--tensor-parallel-size N` (multi-GPU) |
+| Gemma 4 31B (FP8-block) | ~35GB | Current default, use `--reasoning-parser gemma4` |
+| Gemma 4 31B (BF16) | ~62GB | Official `google/gemma-4-31B-it`, needs `HUGGING_FACE_HUB_TOKEN` |
+| Ornith-1.0-35B-FP8 | ~55GB | Use `docker-compose.ornith.yaml`, needs `--reasoning-parser qwen3` |
+| Ornith-1.0-9B | ~19GB | Smaller test model, use Ornith compose file |
 | Qwen3.5-72B | ~140GB FP16 | Use AWQ/FP8 quantization |
-| Llama 3.1-70B | ~140GB FP16 | Set `HUGGING_FACE_HUB_TOKEN`, use AWQ |
+| Llama 3.1-70B | ~140GB FP16 | Gated model, needs `HUGGING_FACE_HUB_TOKEN` |
+
+To change flags, edit the `command` section under `vllm` in `docker-compose.yaml`.
 
 To change flags, edit the `command` section under `vllm` in `docker-compose.yaml`.
 
@@ -309,15 +320,15 @@ You can run multiple vLLM instances on different ports for different models, eac
 
 ```yaml
 model_list:
+  - model_name: gemma-4-31b
+    litellm_params:
+      model: openai/gemma-4-31b
+      api_base: http://vllm:8000/v1
+      api_key: EMPTY
   - model_name: ornith-1.0
     litellm_params:
       model: openai/ornith-1.0
-      api_base: http://vllm-ornith:8000/v1
-      api_key: EMPTY
-  - model_name: ornith-9b
-    litellm_params:
-      model: openai/ornith-9b
-      api_base: http://vllm-9b:8001/v1
+      api_base: http://vllm-ornith:8001/v1
       api_key: EMPTY
 ```
 
@@ -341,11 +352,48 @@ curl -s http://localhost:4000/key/generate \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "models": ["ornith-1.0"],
+    "models": ["gemma-4-31b"],
     "max_budget": 25.0,
     "budget_duration": "30d",
     "max_parallel_requests": 5,
     "metadata": {"user": "bob@example.com", "team": "engineering"}
+  }'
+```
+
+## Using with opencode
+
+Create `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "local-gemma": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Gemma 4 (LiteLLM)",
+      "options": {
+        "baseURL": "http://localhost:4000/v1",
+        "apiKey": "sk-your-virtual-or-master-key-here"
+      },
+      "models": {
+        "gemma-4-31b": {
+          "name": "Gemma 4 31B"
+        }
+      }
+    }
+  }
+}
+```
+
+Generate a dedicated key for opencode:
+
+```bash
+curl -s http://localhost:4000/key/generate \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "models": ["gemma-4-31b"],
+    "metadata": {"user": "opencode"}
   }'
 ```
 
@@ -384,17 +432,17 @@ sudo apt install nvidia-container-toolkit && sudo nvidia-ctk runtime configure -
 ### CUDA out of memory / vLLM crashes on startup
 The model + KV cache doesn't fit in VRAM. Try:
 - Lower `--gpu-memory-utilization` (e.g., 0.80)
-- Lower `--max-model-len` (e.g., 65536)
-- Switch to a smaller model (e.g., Ornith-1.0-9B)
-- Enable `--kv-cache-dtype fp8` (already set for the default config)
+- Lower `--max-model-len` (e.g., 16384)
+- Switch to a smaller model (e.g., use `docker-compose.ornith.yaml` with Ornith-1.0-9B)
 
 ### Model download is slow or fails
-- Set `HUGGING_FACE_HUB_TOKEN` in `.env` — unauthenticated downloads are rate-limited
+- Set `HUGGING_FACE_HUB_TOKEN` in `.env` — **required** for Gemma 4 (gated model)
+- Accept the license at https://huggingface.co/google/gemma-4-31B-it first
 - Check network connectivity: `curl -I https://huggingface.co`
-- The model is ~70GB — this is normal for first download
+- The FP8-block model is ~35GB — this is normal for first download
 
 ### vLLM starts but returns 404
-Make sure the model name in your request matches `--served-model-name` (default: `ornith-1.0`).
+Make sure the model name in your request matches `--served-model-name` (default: `gemma-4-31b`).
 
 ### LiteLLM returns 401 Unauthorized
 You're using the wrong key. Use either:
@@ -404,9 +452,16 @@ You're using the wrong key. Use either:
 ### vLLM: `cudaErrorIllegalInstruction` during graph capture
 The `--gpu-memory-utilization` is too high. Lower it to 0.80 and restart:
 ```bash
-# Edit docker-compose.yaml, change 0.85 → 0.80
+# Edit docker-compose.yaml, change 0.90 → 0.80
 docker compose up -d vllm
 ```
+
+### Gemma 4: license not accepted / 403 from Hugging Face
+You must accept the Gemma 4 license before downloading:
+1. Go to https://huggingface.co/google/gemma-4-31B-it
+2. Click "Agree and access repository"
+3. Generate a token at https://huggingface.co/settings/tokens
+4. Set `HUGGING_FACE_HUB_TOKEN` in `.env`
 
 ### How to restart after changing config
 ```bash
